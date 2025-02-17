@@ -109,9 +109,15 @@ resource "azurerm_container_group" "rabbitmq" {
   dns_name_label      = "ci-${local.base_name}-rbmq"
   os_type             = "Linux"
 
+  image_registry_credential {
+    server   = data.azurerm_container_registry.main.login_server
+    username = data.azurerm_container_registry.main.admin_username
+    password = data.azurerm_container_registry.main.admin_password
+  }
+
   container {
     name   = "rabbitmq"
-    image  = "rabbitmq:3-management"
+    image  = "acrmaalsimfolabs.azurecr.io/rabbitmq:3-management"
     cpu    = "0.5"
     memory = "1.5"
 

@@ -148,3 +148,33 @@ resource "azurerm_container_group" "rabbitmq" {
     }
   ]
 }
+
+resource "azurerm_container_group" "console" {
+  name                = "ci-${local.base_name}-console"
+  location            = data.azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
+  os_type             = "Linux"
+  ip_address_type = "None"
+
+  image_registry_credential {
+    server   = data.azurerm_container_registry.main.login_server
+    username = data.azurerm_container_registry.main.admin_username
+    password = data.azurerm_container_registry.main.admin_password
+  }
+
+  container {
+    name   = "console"
+    image  = "acrmaalsimfolabs.azurecr.io/matthieuf/pubsub-console:1.0"
+    cpu    = "0.5"
+    memory = "1.5"
+
+    environment_variables = {
+      RabbitMQ__Hostname = azurerm_container_group.rabbitmq.fqdn
+    }
+
+    secure_environment_variables = {
+      RabbitMQ__Username = "admin"
+      RabbitMQ__Password = random_password.rabbitmq_password.result
+    }
+  }
+}

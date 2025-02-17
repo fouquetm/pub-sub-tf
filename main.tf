@@ -2,14 +2,8 @@ locals {
   base_name = "${var.project}-${var.environment}"
 }
 
-resource "random_string" "main" {
-  length  = 18
-  special = false
-  upper   = false  
-}
-
 resource "azurerm_storage_account" "main" {
-  name                     = "st${random_string.main.result}"
+  name                     = replace("st${local.base_name}", "-", "")
   resource_group_name      = data.azurerm_resource_group.main.name
   location                 = data.azurerm_resource_group.main.location
   account_tier             = "Standard"
@@ -31,7 +25,7 @@ resource "azurerm_key_vault" "main" {
     tenant_id = data.azurerm_client_config.current.tenant_id
     object_id = data.azurerm_client_config.current.object_id
 
-    secret_permissions = [   
+    secret_permissions = [
       "Get",
       "List",
       "Set",
@@ -40,18 +34,18 @@ resource "azurerm_key_vault" "main" {
   }
 }
 
-resource "random_string" "sqlsrv_password" {
+resource "random_password" "sqlsrv_password" {
   length  = 16
   special = true
-  upper   = true  
+  upper   = true
 }
 
 resource "azurerm_key_vault_secret" "sql-srv-password" {
   name         = "sql-srv-password"
-  value        = random_string.sqlsrv_password.result
+  value        = random_password.sqlsrv_password.result
   key_vault_id = azurerm_key_vault.main.id
 
-  depends_on = [ azurerm_key_vault.main ]
+  depends_on = [azurerm_key_vault.main]
 }
 
 resource "azurerm_key_vault_secret" "sql-srv-login" {
@@ -59,7 +53,7 @@ resource "azurerm_key_vault_secret" "sql-srv-login" {
   value        = var.sqlsrv_login
   key_vault_id = azurerm_key_vault.main.id
 
-  depends_on = [ azurerm_key_vault.main ]
+  depends_on = [azurerm_key_vault.main]
 }
 
 resource "azurerm_mssql_server" "main" {
@@ -68,7 +62,7 @@ resource "azurerm_mssql_server" "main" {
   location                     = data.azurerm_resource_group.main.location
   version                      = "12.0"
   administrator_login          = var.sqlsrv_login
-  administrator_login_password = random_string.sqlsrv_password.result
+  administrator_login_password = random_password.sqlsrv_password.result
 }
 
 resource "azurerm_mssql_database" "rabbitmqdemo" {
@@ -83,4 +77,68 @@ resource "azurerm_mssql_database" "rabbitmqdemo" {
   lifecycle {
     prevent_destroy = true
   }
+}
+
+resource "random_password" "rabbitmq_password" {
+  length  = 16
+  special = true
+  upper   = true
+}
+
+resource "azurerm_key_vault_secret" "rabbitmq-login" {
+  name         = "rabbitmq-login"
+  value        = "admin"
+  key_vault_id = azurerm_key_vault.main.id
+
+  depends_on = [azurerm_key_vault.main]
+}
+
+resource "azurerm_key_vault_secret" "rabbitmq-password" {
+  name         = "rabbitmq-password"
+  value        = random_password.rabbitmq_password.result
+  key_vault_id = azurerm_key_vault.main.id
+
+  depends_on = [azurerm_key_vault.main]
+}
+
+resource "azurerm_container_group" "rabbitmq" {
+  name                = "ci-${local.base_name}-rbmq"
+  location            = data.azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
+  ip_address_type     = "Public"
+  dns_name_label      = "ci-${local.base_name}-rbmq"
+  os_type             = "Linux"
+
+  container {
+    name   = "rabbitmq"
+    image  = "rabbitmq:3-management"
+    cpu    = "0.5"
+    memory = "1.5"
+
+    ports {
+      port     = 5672
+      protocol = "TCP"
+    }
+
+    ports {
+      port     = 15672
+      protocol = "TCP"
+    }
+
+    secure_environment_variables = {
+      RABBITMQ_DEFAULT_USER = "admin"
+      RABBITMQ_DEFAULT_PASS = random_password.rabbitmq_password.result
+    }
+  }
+
+  exposed_port = [ # Expose the RabbitMQ management interface
+    {
+      port     = 15672
+      protocol = "TCP"
+    },
+    {
+      port     = 5672
+      protocol = "TCP"
+    }
+  ]
 }

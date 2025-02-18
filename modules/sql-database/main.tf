@@ -1,4 +1,5 @@
 resource "random_password" "sqlsrv_password" {
+  count   = var.mssql_server_name != null ? 0 : 1
   length  = 16
   special = true
   upper   = true
@@ -7,7 +8,7 @@ resource "random_password" "sqlsrv_password" {
 resource "azurerm_key_vault_secret" "sql-srv-password" {
   count        = var.mssql_server_name != null ? 0 : 1
   name         = "sql-srv-password"
-  value        = random_password.sqlsrv_password.result
+  value        = random_password.sqlsrv_password[0].result
   key_vault_id = var.key_vault_id
 }
 
@@ -25,7 +26,7 @@ resource "azurerm_mssql_server" "main" {
   location                     = var.location
   version                      = "12.0"
   administrator_login          = var.sqlsrv_login
-  administrator_login_password = random_password.sqlsrv_password.result
+  administrator_login_password = random_password.sqlsrv_password[0].result
 }
 
 data "azurerm_mssql_server" "main" {
@@ -34,8 +35,14 @@ data "azurerm_mssql_server" "main" {
   resource_group_name = var.resource_group_name
 }
 
+data "azurerm_key_vault_secret" "sqlsrv-admin-password" {
+  count        = var.mssql_server_name != null ? 1 : 0
+  key_vault_id = var.key_vault_id
+  name         = "sql-srv-password"
+}
+
 resource "azurerm_mssql_firewall_rule" "azure_services" {
-  count            = var.allows_azure_services_to_access_server ? 1 : 0
+  count            = var.mssql_server_name == null && var.allows_azure_services_to_access_server ? 1 : 0
   server_id        = var.mssql_server_name != null ? data.azurerm_mssql_server.main[0].id : azurerm_mssql_server.main[0].id
   name             = "AllowAllWindowsAzureIps"
   start_ip_address = "0.0.0.0"
@@ -53,6 +60,6 @@ resource "azurerm_mssql_database" "main" {
 
 resource "azurerm_key_vault_secret" "database-connection-string" {
   name         = "${var.database_name}-sql-connection-string"
-  value        = "Server=tcp:${var.mssql_server_name != null ? data.azurerm_mssql_server.main[0].fully_qualified_domain_name : azurerm_mssql_server.main[0].fully_qualified_domain_name},1433;Initial Catalog=${azurerm_mssql_database.main.name};Persist Security Info=False;User ID=${var.sqlsrv_login};Password=${random_password.sqlsrv_password.result};Connection Timeout=30;"
+  value        = "Server=tcp:${var.mssql_server_name != null ? data.azurerm_mssql_server.main[0].fully_qualified_domain_name : azurerm_mssql_server.main[0].fully_qualified_domain_name},1433;Initial Catalog=${azurerm_mssql_database.main.name};Persist Security Info=False;User ID=${var.sqlsrv_login};Password=${var.mssql_server_name != null ? data.azurerm_key_vault_secret.sqlsrv-admin-password[0].value : random_password.sqlsrv_password[0].result};Connection Timeout=30;"
   key_vault_id = var.key_vault_id
 }

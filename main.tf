@@ -17,58 +17,15 @@ moved { # faire un terraform init pour prise en compte
   to   = module.key_vault.azurerm_key_vault.main
 }
 
-resource "random_password" "sqlsrv_password" {
-  length  = 16
-  special = true
-  upper   = true
-}
+module "sql-database" {
+  source = "./modules/sql-database"
 
-resource "azurerm_key_vault_secret" "sql-srv-password" {
-  name         = "sql-srv-password"
-  value        = random_password.sqlsrv_password.result
-  key_vault_id = module.key_vault.key_vault_id
-}
-
-resource "azurerm_key_vault_secret" "sql-srv-login" {
-  name         = "sql-srv-login"
-  value        = var.sqlsrv_login
-  key_vault_id = module.key_vault.key_vault_id
-}
-
-resource "azurerm_mssql_server" "main" {
-  name                         = "sqlsrv-${local.base_name}"
-  resource_group_name          = data.azurerm_resource_group.main.name
-  location                     = data.azurerm_resource_group.main.location
-  version                      = "12.0"
-  administrator_login          = var.sqlsrv_login
-  administrator_login_password = random_password.sqlsrv_password.result
-}
-
-resource "azurerm_mssql_firewall_rule" "azure_services" {
-  server_id        = azurerm_mssql_server.main.id
-  name             = "AllowAllWindowsAzureIps"
-  start_ip_address = "0.0.0.0"
-  end_ip_address   = "0.0.0.0"
-}
-
-resource "azurerm_mssql_database" "rabbitmqdemo" {
-  name         = "RabbitMqDemo"
-  server_id    = azurerm_mssql_server.main.id
-  collation    = "SQL_Latin1_General_CP1_CI_AS"
-  license_type = "LicenseIncluded"
-  max_size_gb  = 2
-  sku_name     = "Basic"
-
-  # prevent the possibility of accidental data loss
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
-resource "azurerm_key_vault_secret" "sql-srv-connection-string" {
-  name         = "sql-srv-connection-string"
-  value        = "Server=tcp:${azurerm_mssql_server.main.fully_qualified_domain_name},1433;Initial Catalog=RabbitMqDemo;Persist Security Info=False;User ID=${azurerm_mssql_server.main.administrator_login};Password=${azurerm_mssql_server.main.administrator_login_password};Connection Timeout=30;"
-  key_vault_id = module.key_vault.key_vault_id
+  base_name                              = local.base_name
+  location                               = data.azurerm_resource_group.main.location
+  resource_group_name                    = data.azurerm_resource_group.main.name
+  key_vault_id                           = module.key_vault.key_vault_id
+  sqlsrv_login                           = "sqladmin"
+  database_name                          = "RabbitMqDemo"
 }
 
 resource "random_password" "rabbitmq_password" {
@@ -212,7 +169,7 @@ resource "azurerm_container_app" "api" {
 
   secret {
     name                = "sql-srv-connection-string"
-    key_vault_secret_id = azurerm_key_vault_secret.sql-srv-connection-string.id
+    key_vault_secret_id = module.sql-database.database_connection_string_secret_id
     identity            = azurerm_user_assigned_identity.main.id
   }
   secret {
@@ -291,12 +248,4 @@ resource "azurerm_container_app" "api" {
       }
     }
   }
-
-  depends_on = [
-    azurerm_user_assigned_identity.main,
-    azurerm_key_vault_secret.sql-srv-connection-string,
-    azurerm_key_vault_secret.rabbitmq-login,
-    azurerm_key_vault_secret.rabbitmq-password,
-    azurerm_mssql_firewall_rule.azure_services
-  ]
 }

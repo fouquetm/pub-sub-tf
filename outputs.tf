@@ -3,6 +3,6 @@ output "api_fqdn" {
 }
 
 output "api_get_product_list_url" {
-  value = "${azurerm_container_app.api.ingress[0].fqdn}/api/Product/productlist"
+  value = "https://${azurerm_container_app.api.ingress[0].fqdn}/api/Product/productlist"
 }
 

@@ -20,3 +20,9 @@ variable "sqlsrv_login" {
   type        = string
   default     = "sqladmin"
 }
+
+variable "acr_name" {
+  description = "The Azure Container Registry name"
+  type        = string
+  default     = "acrmaalsimfolabs"
+}

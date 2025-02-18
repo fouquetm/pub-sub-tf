@@ -1,3 +1,8 @@
+variable "subscription_id" {
+  description = "The Azure subscription ID"
+  type        = string
+}
+
 variable "project" {
   description = "The project name"
   type        = string
@@ -7,11 +12,11 @@ variable "project" {
 variable "environment" {
   description = "The environment name"
   type        = string
-  default     = "mfolabs"  
+  default     = "mfolabs"
 }
 
 variable "sqlsrv_login" {
   description = "The SQL Server administrator login"
   type        = string
-  default     = "sqladmin"  
+  default     = "sqladmin"
 }

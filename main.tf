@@ -2,14 +2,6 @@ locals {
   base_name = "${var.project}-${var.environment}"
 }
 
-resource "azurerm_storage_account" "main" {
-  name                     = replace("st${local.base_name}", "-", "")
-  resource_group_name      = data.azurerm_resource_group.main.name
-  location                 = data.azurerm_resource_group.main.location
-  account_tier             = "Standard"
-  account_replication_type = "LRS"
-}
-
 resource "azurerm_key_vault" "main" {
   name                        = "kv-${local.base_name}"
   location                    = data.azurerm_resource_group.main.location
@@ -19,19 +11,19 @@ resource "azurerm_key_vault" "main" {
   soft_delete_retention_days  = 7
   purge_protection_enabled    = false
 
-  sku_name = "standard"
+  sku_name                  = "standard"
+  enable_rbac_authorization = true
+}
 
-  access_policy {
-    tenant_id = data.azurerm_client_config.current.tenant_id
-    object_id = data.azurerm_client_config.current.object_id
-
-    secret_permissions = [
-      "Get",
-      "List",
-      "Set",
-      "Delete"
-    ]
-  }
+resource "azurerm_role_assignment" "kv_current_id_secrets_admin" {
+  scope                = azurerm_key_vault.main.id
+  role_definition_name = "Key Vault Secrets Officer"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+resource "azurerm_key_vault_secret" "acr-password" {
+  name         = "acr-password"
+  value        = data.azurerm_container_registry.main.admin_password
+  key_vault_id = azurerm_key_vault.main.id
 }
 
 resource "random_password" "sqlsrv_password" {
@@ -44,16 +36,12 @@ resource "azurerm_key_vault_secret" "sql-srv-password" {
   name         = "sql-srv-password"
   value        = random_password.sqlsrv_password.result
   key_vault_id = azurerm_key_vault.main.id
-
-  depends_on = [azurerm_key_vault.main]
 }
 
 resource "azurerm_key_vault_secret" "sql-srv-login" {
   name         = "sql-srv-login"
   value        = var.sqlsrv_login
   key_vault_id = azurerm_key_vault.main.id
-
-  depends_on = [azurerm_key_vault.main]
 }
 
 resource "azurerm_mssql_server" "main" {
@@ -63,6 +51,13 @@ resource "azurerm_mssql_server" "main" {
   version                      = "12.0"
   administrator_login          = var.sqlsrv_login
   administrator_login_password = random_password.sqlsrv_password.result
+}
+
+resource "azurerm_mssql_firewall_rule" "azure_services" {
+  server_id        = azurerm_mssql_server.main.id
+  name             = "AllowAllWindowsAzureIps"
+  start_ip_address = "0.0.0.0"
+  end_ip_address   = "0.0.0.0"
 }
 
 resource "azurerm_mssql_database" "rabbitmqdemo" {
@@ -77,6 +72,12 @@ resource "azurerm_mssql_database" "rabbitmqdemo" {
   lifecycle {
     prevent_destroy = true
   }
+}
+
+resource "azurerm_key_vault_secret" "sql-srv-connection-string" {
+  name         = "sql-srv-connection-string"
+  value        = "Server=tcp:${azurerm_mssql_server.main.fully_qualified_domain_name},1433;Initial Catalog=RabbitMqDemo;Persist Security Info=False;User ID=${azurerm_mssql_server.main.administrator_login};Password=${azurerm_mssql_server.main.administrator_login_password};Connection Timeout=30;"
+  key_vault_id = azurerm_key_vault.main.id
 }
 
 resource "random_password" "rabbitmq_password" {
@@ -154,7 +155,7 @@ resource "azurerm_container_group" "console" {
   location            = data.azurerm_resource_group.main.location
   resource_group_name = data.azurerm_resource_group.main.name
   os_type             = "Linux"
-  ip_address_type = "None"
+  ip_address_type     = "None"
 
   image_registry_credential {
     server   = data.azurerm_container_registry.main.login_server
@@ -177,4 +178,144 @@ resource "azurerm_container_group" "console" {
       RabbitMQ__Password = random_password.rabbitmq_password.result
     }
   }
+}
+
+resource "azurerm_user_assigned_identity" "main" {
+  name                = "mid-${local.base_name}"
+  location            = data.azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
+}
+
+resource "azurerm_role_assignment" "kv_mid_get_secrets" {
+  scope                = azurerm_key_vault.main.id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = azurerm_user_assigned_identity.main.principal_id
+}
+
+resource "azurerm_role_assignment" "acr_mid_pull_images" {
+  scope                = data.azurerm_container_registry.main.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_user_assigned_identity.main.principal_id
+}
+
+resource "azurerm_container_app_environment" "main" {
+  name                = "cae-${local.base_name}"
+  location            = data.azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
+}
+
+resource "azurerm_container_app" "api" {
+  name                         = "ca-api-${local.base_name}"
+  container_app_environment_id = azurerm_container_app_environment.main.id
+  resource_group_name          = data.azurerm_resource_group.main.name
+  revision_mode                = "Single"
+
+
+  identity {
+    type = "UserAssigned"
+    identity_ids = [
+      azurerm_user_assigned_identity.main.id
+    ]
+  }
+
+  registry {
+    server   = data.azurerm_container_registry.main.login_server
+    identity = azurerm_user_assigned_identity.main.id
+  }
+
+  secret {
+    name                = "sql-srv-connection-string"
+    key_vault_secret_id = azurerm_key_vault_secret.sql-srv-connection-string.id
+    identity            = azurerm_user_assigned_identity.main.id
+  }
+  secret {
+    name                = "acr-password"
+    key_vault_secret_id = azurerm_key_vault_secret.acr-password.id
+    identity            = azurerm_user_assigned_identity.main.id
+  }
+  secret {
+    name                = "rabbitmq-login"
+    key_vault_secret_id = azurerm_key_vault_secret.rabbitmq-login.id
+    identity            = azurerm_user_assigned_identity.main.id
+  }
+  secret {
+    name                = "rabbitmq-password"
+    key_vault_secret_id = azurerm_key_vault_secret.rabbitmq-password.id
+    identity            = azurerm_user_assigned_identity.main.id
+  }
+
+  ingress {
+    allow_insecure_connections = false
+    external_enabled           = true
+    target_port                = 80
+    traffic_weight {
+      percentage      = 100
+      latest_revision = true
+    }
+  }
+
+  template {
+    min_replicas = 1
+    max_replicas = 10
+    container {
+      name   = "api"
+      image  = "acrmaalsimfolabs.azurecr.io/matthieuf/pubsub-api:1.3"
+      cpu    = 0.5
+      memory = "1Gi"
+
+      startup_probe {
+        transport               = "TCP"
+        port                    = 80
+        path                    = "/api/Product/productlist"
+        initial_delay           = 10
+        interval_seconds        = 5
+        failure_count_threshold = 3
+      }
+
+      readiness_probe {
+        transport               = "TCP"
+        port                    = 80
+        path                    = "/api/Product/productlist"
+        initial_delay           = 10
+        interval_seconds        = 5
+        failure_count_threshold = 3
+        success_count_threshold = 1
+      }
+
+      liveness_probe {
+        transport               = "TCP"
+        port                    = 80
+        path                    = "/api/Product/productlist"
+        initial_delay           = 10
+        interval_seconds        = 5
+        failure_count_threshold = 3
+      }
+
+      env {
+        name  = "RabbitMQ__Hostname"
+        value = azurerm_container_group.rabbitmq.fqdn
+      }
+      env {
+        name        = "RabbitMQ__Username"
+        secret_name = "rabbitmq-login"
+      }
+      env {
+        name        = "RabbitMQ__Password"
+        secret_name = "rabbitmq-password"
+      }
+      env {
+        name        = "ConnectionStrings__DefaultConnection"
+        secret_name = "sql-srv-connection-string"
+      }
+    }
+  }
+
+  depends_on = [
+    azurerm_user_assigned_identity.main,
+    azurerm_key_vault_secret.acr-password,
+    azurerm_key_vault_secret.sql-srv-connection-string,
+    azurerm_key_vault_secret.rabbitmq-login,
+    azurerm_key_vault_secret.rabbitmq-password,
+    azurerm_mssql_firewall_rule.azure_services
+  ]
 }

@@ -2,28 +2,19 @@ locals {
   base_name = "${var.project}-${var.environment}"
 }
 
-resource "azurerm_key_vault" "main" {
-  name                        = "kv-${local.base_name}"
-  location                    = data.azurerm_resource_group.main.location
-  resource_group_name         = data.azurerm_resource_group.main.name
-  enabled_for_disk_encryption = true
-  tenant_id                   = data.azurerm_client_config.current.tenant_id
-  soft_delete_retention_days  = 7
-  purge_protection_enabled    = false
+module "key_vault" {
+  source = "./modules/keyvault"
 
-  sku_name                  = "standard"
-  enable_rbac_authorization = true
+  base_name               = local.base_name
+  location                = data.azurerm_resource_group.main.location
+  resource_group_name     = data.azurerm_resource_group.main.name
+  tenant_id               = data.azurerm_client_config.current.tenant_id
+  administrator_object_id = data.azurerm_client_config.current.object_id
 }
 
-resource "azurerm_role_assignment" "kv_current_id_secrets_admin" {
-  scope                = azurerm_key_vault.main.id
-  role_definition_name = "Key Vault Secrets Officer"
-  principal_id         = data.azurerm_client_config.current.object_id
-}
-resource "azurerm_key_vault_secret" "acr-password" {
-  name         = "acr-password"
-  value        = data.azurerm_container_registry.main.admin_password
-  key_vault_id = azurerm_key_vault.main.id
+moved { # faire un terraform init pour prise en compte
+  from = azurerm_key_vault.main
+  to   = module.key_vault.azurerm_key_vault.main
 }
 
 resource "random_password" "sqlsrv_password" {
@@ -35,13 +26,13 @@ resource "random_password" "sqlsrv_password" {
 resource "azurerm_key_vault_secret" "sql-srv-password" {
   name         = "sql-srv-password"
   value        = random_password.sqlsrv_password.result
-  key_vault_id = azurerm_key_vault.main.id
+  key_vault_id = module.key_vault.key_vault_id
 }
 
 resource "azurerm_key_vault_secret" "sql-srv-login" {
   name         = "sql-srv-login"
   value        = var.sqlsrv_login
-  key_vault_id = azurerm_key_vault.main.id
+  key_vault_id = module.key_vault.key_vault_id
 }
 
 resource "azurerm_mssql_server" "main" {
@@ -77,7 +68,7 @@ resource "azurerm_mssql_database" "rabbitmqdemo" {
 resource "azurerm_key_vault_secret" "sql-srv-connection-string" {
   name         = "sql-srv-connection-string"
   value        = "Server=tcp:${azurerm_mssql_server.main.fully_qualified_domain_name},1433;Initial Catalog=RabbitMqDemo;Persist Security Info=False;User ID=${azurerm_mssql_server.main.administrator_login};Password=${azurerm_mssql_server.main.administrator_login_password};Connection Timeout=30;"
-  key_vault_id = azurerm_key_vault.main.id
+  key_vault_id = module.key_vault.key_vault_id
 }
 
 resource "random_password" "rabbitmq_password" {
@@ -89,17 +80,13 @@ resource "random_password" "rabbitmq_password" {
 resource "azurerm_key_vault_secret" "rabbitmq-login" {
   name         = "rabbitmq-login"
   value        = "admin"
-  key_vault_id = azurerm_key_vault.main.id
-
-  depends_on = [azurerm_key_vault.main]
+  key_vault_id = module.key_vault.key_vault_id
 }
 
 resource "azurerm_key_vault_secret" "rabbitmq-password" {
   name         = "rabbitmq-password"
   value        = random_password.rabbitmq_password.result
-  key_vault_id = azurerm_key_vault.main.id
-
-  depends_on = [azurerm_key_vault.main]
+  key_vault_id = module.key_vault.key_vault_id
 }
 
 resource "azurerm_container_group" "rabbitmq" {
@@ -187,7 +174,7 @@ resource "azurerm_user_assigned_identity" "main" {
 }
 
 resource "azurerm_role_assignment" "kv_mid_get_secrets" {
-  scope                = azurerm_key_vault.main.id
+  scope                = module.key_vault.key_vault_id
   role_definition_name = "Key Vault Secrets User"
   principal_id         = azurerm_user_assigned_identity.main.principal_id
 }
@@ -226,11 +213,6 @@ resource "azurerm_container_app" "api" {
   secret {
     name                = "sql-srv-connection-string"
     key_vault_secret_id = azurerm_key_vault_secret.sql-srv-connection-string.id
-    identity            = azurerm_user_assigned_identity.main.id
-  }
-  secret {
-    name                = "acr-password"
-    key_vault_secret_id = azurerm_key_vault_secret.acr-password.id
     identity            = azurerm_user_assigned_identity.main.id
   }
   secret {
@@ -312,7 +294,6 @@ resource "azurerm_container_app" "api" {
 
   depends_on = [
     azurerm_user_assigned_identity.main,
-    azurerm_key_vault_secret.acr-password,
     azurerm_key_vault_secret.sql-srv-connection-string,
     azurerm_key_vault_secret.rabbitmq-login,
     azurerm_key_vault_secret.rabbitmq-password,
